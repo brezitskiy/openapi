@@ -133,8 +133,7 @@ def _parse_schema(schema, method):
     return _TYPE_MAPPING[(schema_type, None)]  # unrecognized format
 
 
-def _example(media_type_objects, method=None, endpoint=None, status=None,
-             nb_indent=0):
+def _example(media_type_objects, content_type, endpoint=None, status=None, nb_indent=0, method=None):
     """
     Format examples in `Media Type Object` openapi v3 to HTTP request or
     HTTP response example.
@@ -147,6 +146,7 @@ def _example(media_type_objects, method=None, endpoint=None, status=None,
         method: The HTTP method to use in example.
         endpoint: The HTTP route to use in example.
         status: The HTTP status to use in example.
+        content_type: The Content-Type to use.
     """
     indent = '   '
     extra_indent = indent * nb_indent
@@ -166,15 +166,15 @@ def _example(media_type_objects, method=None, endpoint=None, status=None,
         media_type_objects[''] = {
             'examples': {'Example request': {'value': ''}}}
 
-    for content_type, content in media_type_objects.items():
+    for ct_type, content in media_type_objects.items():
         examples = content.get('examples')
         example = content.get('example')
 
         if examples is None:
             examples = {}
             if not example:
-                if content_type != 'application/json':
-                    LOG.info('skipping non-JSON example generation.')
+                if ct_type != content_type:
+                    LOG.info('skipping non-expected content-type.')
                     continue
                 example = _parse_schema(content['schema'], method=method)
 
@@ -211,7 +211,7 @@ def _example(media_type_objects, method=None, endpoint=None, status=None,
                     .format(**locals())
                 yield '{extra_indent}{indent}Host: example.com' \
                     .format(**locals())
-                if content_type:
+                if ct_type:
                     yield '{extra_indent}{indent}Content-Type: {content_type}'\
                         .format(**locals())
 
@@ -229,21 +229,25 @@ def _example(media_type_objects, method=None, endpoint=None, status=None,
                 yield ''
 
 
-def _httpresource(endpoint, method, properties, convert, render_examples,
-                  render_request):
+def _httpresource(endpoint, method, properties, convert, render_examples, render_request, content_type):
     # https://github.com/OAI/OpenAPI-Specification/blob/3.0.2/versions/3.0.0.md#operation-object
     parameters = properties.get('parameters', [])
     responses = properties['responses']
     query_param_examples = []
     indent = '   '
 
+    operation_title = _get_operation_title(properties.get('operationId'))
+
+    yield operation_title
+    yield '^' * len(operation_title)
+    yield ''
     yield '.. http:{0}:: {1}'.format(method, endpoint)
     yield '   :synopsis: {0}'.format(properties.get('summary', 'null'))
     yield ''
 
     if 'summary' in properties:
         for line in properties['summary'].splitlines():
-            yield '{indent}**{line}**'.format(**locals())
+            yield '{indent}{line}'.format(**locals())
         yield ''
 
     if 'description' in properties:
@@ -283,7 +287,7 @@ def _httpresource(endpoint, method, properties, convert, render_examples,
     # print request content
     if render_request:
         request_content = properties.get('requestBody', {}).get('content', {})
-        if request_content and 'application/json' in request_content:
+        if request_content and content_type in request_content:
             schema = request_content['application/json']['schema']
             req_properties = json.dumps(schema['properties'], indent=2,
                                         separators=(',', ':'))
@@ -305,11 +309,7 @@ def _httpresource(endpoint, method, properties, convert, render_examples,
 
         # print request example
         request_content = properties.get('requestBody', {}).get('content', {})
-        for line in _example(
-                request_content,
-                method,
-                endpoint=endpoint_examples,
-                nb_indent=1):
+        for line in _example(request_content, content_type, endpoint=endpoint_examples, nb_indent=1, method=method):
             yield line
 
     # print response status codes
@@ -320,8 +320,7 @@ def _httpresource(endpoint, method, properties, convert, render_examples,
 
         # print response example
         if render_examples:
-            for line in _example(
-                    response.get('content', {}), status=status, nb_indent=2):
+            for line in _example(response.get('content', {}), content_type, status=status, nb_indent=2):
                 yield line
 
     # print request header params
@@ -352,13 +351,20 @@ def _httpresource(endpoint, method, properties, convert, render_examples,
                         cb_properties,
                         convert=convert,
                         render_examples=render_examples,
-                        render_request=render_request):
+                        render_request=render_request,
+                        content_type=content_type):
                     if line:
                         yield indent+indent+line
                     else:
                         yield ''
 
     yield ''
+
+
+def _get_operation_title(operation_id):
+    matches = re.search(r'^(get|post|delete|patch)(.*?)(Collection|Item)$', operation_id)
+
+    return operation_id if matches is None else matches[1].capitalize() + ' ' + matches[2] + ' ' + matches[3]
 
 
 def _header(title):
@@ -433,7 +439,8 @@ def openapihttpdomain(spec, **options):
                     properties,
                     convert,
                     render_examples='examples' in options,
-                    render_request=render_request))
+                    render_request=render_request,
+                    content_type=options.get('content_type')))
 
         for key in groups.keys():
             if key:
@@ -451,6 +458,7 @@ def openapihttpdomain(spec, **options):
                     properties,
                     convert,
                     render_examples='examples' in options,
-                    render_request=render_request))
+                    render_request=render_request,
+                    content_type=options.get('content_type')))
 
     return iter(itertools.chain(*generators))
